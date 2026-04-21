@@ -915,6 +915,109 @@ fn find_ui_library(target: Option<&str>) -> Option<PathBuf> {
     find_library(lib_name, target)
 }
 
+/// Locate the OpenHarmony SDK's `native/` directory — the one that contains
+/// `llvm/bin/clang` (the cross-compiler) and `sysroot/` (musl headers + libs).
+///
+/// Probes `$OHOS_SDK_HOME` first (user-supplied path; may point at either the
+/// SDK root or the `native/` subdir — we normalize). Falls back to DevEco
+/// Studio's default install locations per platform. Returns `None` if nothing
+/// resembling an OHOS SDK is present; the caller is expected to surface a
+/// remediation message naming the env var.
+fn find_harmonyos_sdk() -> Option<PathBuf> {
+    fn normalize(p: PathBuf) -> Option<PathBuf> {
+        // Accept either `<sdk>` or `<sdk>/native` — we want the `native` dir
+        // so callers can unconditionally join `llvm/bin/clang` and `sysroot`.
+        if p.join("llvm").join("bin").exists() && p.join("sysroot").exists() {
+            return Some(p);
+        }
+        let native = p.join("native");
+        if native.join("llvm").join("bin").exists() && native.join("sysroot").exists() {
+            return Some(native);
+        }
+        // DevEco's layout nests the API-level dir: <root>/openharmony/<api>/native
+        if let Ok(entries) = std::fs::read_dir(p.join("openharmony")) {
+            for entry in entries.flatten() {
+                let candidate = entry.path().join("native");
+                if candidate.join("llvm").join("bin").exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
+    }
+
+    if let Ok(env_path) = std::env::var("OHOS_SDK_HOME") {
+        if let Some(sdk) = normalize(PathBuf::from(env_path)) {
+            return Some(sdk);
+        }
+    }
+
+    let home = std::env::var("HOME").ok().map(PathBuf::from);
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(h) = home {
+        // macOS default: DevEco Studio installs into ~/Library/Huawei/Sdk
+        candidates.push(h.join("Library/Huawei/Sdk"));
+        // Linux default
+        candidates.push(h.join("Huawei/Sdk"));
+    }
+    #[cfg(target_os = "windows")]
+    if let Ok(userprofile) = std::env::var("USERPROFILE") {
+        candidates.push(PathBuf::from(userprofile).join("Huawei").join("Sdk"));
+    }
+
+    for c in candidates {
+        if let Some(sdk) = normalize(c) {
+            return Some(sdk);
+        }
+    }
+    None
+}
+
+/// Cross-compile env vars to pass to `cargo build` so `cc-rs` picks up the
+/// OHOS SDK's clang + musl sysroot for any C source in dependency build.rs
+/// scripts (notably `libmimalloc-sys`, which needs `pthread.h`).
+///
+/// Cargo reads both `CC_<triple>` and the underscored `CC_<TRIPLE>` form —
+/// `cc-rs` prefers the latter. We set both for robustness. Same for linker.
+fn harmonyos_cross_env(sdk_native: &Path, target: Option<&str>) -> Vec<(String, String)> {
+    let (triple, clang_target) = match target {
+        Some("harmonyos-simulator") => ("x86_64-unknown-linux-ohos", "x86_64-linux-ohos"),
+        _ => ("aarch64-unknown-linux-ohos", "aarch64-linux-ohos"),
+    };
+    let clang = sdk_native.join("llvm").join("bin").join("clang");
+    let clangpp = sdk_native.join("llvm").join("bin").join("clang++");
+    let sysroot = sdk_native.join("sysroot");
+    let cflags = format!(
+        "--target={} --sysroot={} -D__MUSL__",
+        clang_target,
+        sysroot.display()
+    );
+    let rustflags = format!(
+        "-C link-arg=--target={} -C link-arg=--sysroot={}",
+        clang_target,
+        sysroot.display()
+    );
+    let triple_upper = triple.to_uppercase().replace('-', "_");
+    let triple_under = triple.replace('-', "_");
+
+    // CC + CXX: libmimalloc-sys compiles .c via CC and can fall into C++ paths
+    // via CXX for some builds — we set both to the OHOS SDK toolchain so neither
+    // escapes to the host `c++` (which lacks --sysroot and would fail with
+    // "'pthread.h' file not found").
+    vec![
+        (format!("CC_{}", triple), clang.display().to_string()),
+        (format!("CC_{}", triple_under), clang.display().to_string()),
+        (format!("CXX_{}", triple), clangpp.display().to_string()),
+        (format!("CXX_{}", triple_under), clangpp.display().to_string()),
+        (format!("CFLAGS_{}", triple), cflags.clone()),
+        (format!("CFLAGS_{}", triple_under), cflags.clone()),
+        (format!("CXXFLAGS_{}", triple), cflags.clone()),
+        (format!("CXXFLAGS_{}", triple_under), cflags),
+        (format!("CARGO_TARGET_{}_LINKER", triple_upper), clang.display().to_string()),
+        (format!("CARGO_TARGET_{}_RUSTFLAGS", triple_upper), rustflags),
+    ]
+}
+
 /// Search for a geisterhand library by name, checking both cross-compilation
 /// target dirs (target/geisterhand/{triple}/release/) and host dir (target/geisterhand/release/).
 fn find_geisterhand_lib(name: &str, target: Option<&str>) -> Option<PathBuf> {
@@ -1205,6 +1308,27 @@ fn build_optimized_libs(
     }
     if let Some(triple) = rust_target_triple(target) {
         cargo_cmd.arg("--target").arg(triple);
+    }
+    // HarmonyOS cross-compile needs the OHOS SDK's clang on PATH for C
+    // dependencies (notably libmimalloc-sys) — without --sysroot the build
+    // fails in build.rs with "'pthread.h' file not found".
+    if matches!(target, Some("harmonyos") | Some("harmonyos-simulator")) {
+        match find_harmonyos_sdk() {
+            Some(sdk) => {
+                for (k, v) in harmonyos_cross_env(&sdk, target) {
+                    cargo_cmd.env(k, v);
+                }
+            }
+            None => {
+                if matches!(format, OutputFormat::Text) {
+                    eprintln!(
+                        "  auto-optimize: OHOS SDK not found — set OHOS_SDK_HOME to the DevEco Studio \
+                         SDK root (the dir containing native/llvm/bin/clang). Skipping auto-optimize."
+                    );
+                }
+                return OptimizedLibs::empty();
+            }
+        }
     }
     if panic_abort_safe {
         // Override the workspace profile's `panic = "unwind"` for the
@@ -4259,6 +4383,31 @@ pub fn run(args: CompileArgs, format: OutputFormat, use_color: bool, verbose: u8
 
     let target = args.target.clone();
 
+    // Fail-fast for HarmonyOS: without the OHOS SDK we can't cross-compile the
+    // runtime or invoke the link, and the downstream error chain is two
+    // confusing messages instead of one. Check up front unless a prebuilt
+    // harmonyos runtime is already on disk (the npm-distribution case, once
+    // that ships). `find_runtime_library` is a borrowed-result, so we inspect
+    // without propagating errors.
+    if matches!(target.as_deref(), Some("harmonyos") | Some("harmonyos-simulator"))
+        && find_harmonyos_sdk().is_none()
+        && find_runtime_library(target.as_deref()).is_err()
+    {
+        anyhow::bail!(
+            "OHOS SDK not found. --target {} needs the OpenHarmony native SDK \
+             (clang + musl sysroot) to cross-compile perry-runtime.\n\n\
+             Install DevEco Studio from https://developer.huawei.com/consumer/en/develop \
+             (the SDK ships under Preferences → SDK Platforms → OpenHarmony), or \
+             download the standalone \"OpenHarmony SDK\" bundle.\n\n\
+             Then export OHOS_SDK_HOME pointing at the SDK root — the directory \
+             that contains `native/llvm/bin/clang` and `native/sysroot/`.\n\n\
+             Common defaults already probed:\n  \
+             - $HOME/Library/Huawei/Sdk  (macOS DevEco default)\n  \
+             - $HOME/Huawei/Sdk          (Linux DevEco default)",
+            target.as_deref().unwrap()
+        );
+    }
+
     // Pre-compute feature flags (moved out of parallel loop to avoid ctx mutation)
     let compiled_features: Vec<String> = if let Some(ref features_str) = args.features {
         let mut features: Vec<String> = features_str.split(',')
@@ -4832,18 +4981,19 @@ pub fn run(args: CompileArgs, format: OutputFormat, use_color: bool, verbose: u8
         // Platform detection for nm tool and symbol prefix
         let is_ios = matches!(target.as_deref(), Some("ios-simulator") | Some("ios"));
         let is_android = matches!(target.as_deref(), Some("android"));
+        let is_harmonyos = matches!(target.as_deref(), Some("harmonyos") | Some("harmonyos-simulator"));
         let is_linux = matches!(target.as_deref(), Some("linux")) || (!cfg!(target_os = "macos") && !cfg!(target_os = "windows") && target.is_none());
         let is_windows = matches!(target.as_deref(), Some("windows")) || (cfg!(target_os = "windows") && target.is_none());
         // Symbol prefix depends on object format:
         // Mach-O targets (macOS, iOS, watchOS, tvOS): nm shows `_` prefix
         // COFF (Windows targets): no prefix
-        // ELF (Linux/Android targets): no prefix
+        // ELF (Linux/Android/HarmonyOS targets): no prefix
         // Use TARGET (what we're compiling to), not HOST (what we're running on)
         let is_macho = matches!(target.as_deref(),
             Some("ios") | Some("ios-simulator") | Some("ios-widget") | Some("ios-widget-simulator") |
             Some("macos") | Some("watchos") | Some("watchos-simulator") |
             Some("tvos") | Some("tvos-simulator")
-        ) || (!is_windows && !is_linux && !is_android && cfg!(target_os = "macos"));
+        ) || (!is_windows && !is_linux && !is_android && !is_harmonyos && cfg!(target_os = "macos"));
         // Find the nm tool: use llvm-nm when cross-compiling (host nm can't read foreign object formats)
         let needs_llvm_nm = is_windows || (is_macho && !cfg!(target_os = "macos"));
         let nm_cmd = if needs_llvm_nm {
@@ -5027,6 +5177,12 @@ pub fn run(args: CompileArgs, format: OutputFormat, use_color: bool, verbose: u8
             { PathBuf::from(format!("{}.dylib", stem)) }
             #[cfg(not(target_os = "macos"))]
             { PathBuf::from(format!("{}.so", stem)) }
+        } else if matches!(target.as_deref(), Some("harmonyos") | Some("harmonyos-simulator")) {
+            // HarmonyOS apps ship as .so loaded by the ArkTS runtime via
+            // napi_module_register — there is no standalone executable
+            // shipping shape. `lib` prefix matches the dlopen name used by
+            // the generated ArkTS shim (`import entry from 'libapp.so'`).
+            PathBuf::from(format!("lib{}.so", stem))
         } else if matches!(target.as_deref(), Some("windows"))
             || (target.is_none() && cfg!(target_os = "windows"))
         {
@@ -5087,6 +5243,7 @@ pub fn run(args: CompileArgs, format: OutputFormat, use_color: bool, verbose: u8
 
     let is_ios = matches!(target.as_deref(), Some("ios-simulator") | Some("ios"));
     let is_android = matches!(target.as_deref(), Some("android"));
+    let is_harmonyos = matches!(target.as_deref(), Some("harmonyos") | Some("harmonyos-simulator"));
     let is_linux = matches!(target.as_deref(), Some("linux"))
         || (target.is_none() && cfg!(target_os = "linux"));
     let is_windows = matches!(target.as_deref(), Some("windows"))
@@ -5168,7 +5325,7 @@ pub fn run(args: CompileArgs, format: OutputFormat, use_color: bool, verbose: u8
     // Without this the is_tvos branch below would unconditionally call `xcrun`,
     // which only exists on macOS with Xcode.
     let is_cross_tvos = is_tvos && !cfg!(target_os = "macos");
-    let jsruntime_lib = if !is_ios && !is_android && !is_watchos && !is_tvos && (ctx.needs_js_runtime || args.enable_js_runtime) {
+    let jsruntime_lib = if !is_ios && !is_android && !is_harmonyos && !is_watchos && !is_tvos && (ctx.needs_js_runtime || args.enable_js_runtime) {
         match find_jsruntime_library(target.as_deref()) {
             Some(lib) => {
                 match format {
@@ -5427,6 +5584,37 @@ pub fn run(args: CompileArgs, format: OutputFormat, use_color: bool, verbose: u8
          // only exports individually-scoped symbols.
          .arg("-Wl,--warn-unresolved-symbols");
         c
+    } else if is_harmonyos {
+        // HarmonyOS NEXT: produce a musl-based ELF .so loaded by ArkTS via
+        // napi_module_register (the NAPI wrapper lands in PR B.2). Uses the
+        // OHOS SDK's clang from DevEco Studio; `--sysroot` + `-D__MUSL__`
+        // match Huawei's hvigor-cc-invocation conventions.
+        let sdk = find_harmonyos_sdk().ok_or_else(|| anyhow!(
+            "OHOS SDK not found. Install DevEco Studio or the standalone \
+             OpenHarmony SDK from https://developer.huawei.com/consumer/en/develop \
+             and set OHOS_SDK_HOME to the SDK root (the dir that contains \
+             native/llvm/bin/clang and native/sysroot/)."
+        ))?;
+        let clang = sdk.join("llvm").join("bin").join("clang");
+        if !clang.exists() {
+            return Err(anyhow!("OHOS SDK clang not found at: {}", clang.display()));
+        }
+        let clang_target = if target.as_deref() == Some("harmonyos-simulator") {
+            "x86_64-linux-ohos"
+        } else {
+            "aarch64-linux-ohos"
+        };
+        let mut c = Command::new(clang);
+        c.arg("-shared")
+         .arg("-fPIC")
+         .arg(format!("--target={}", clang_target))
+         .arg(format!("--sysroot={}", sdk.join("sysroot").display()))
+         .arg("-D__MUSL__")
+         // Same interposition rationale as the Android branch — ArkTS loads
+         // the .so into a host process that may expose its own `main`/malloc.
+         .arg("-Wl,-Bsymbolic")
+         .arg("-Wl,--warn-unresolved-symbols");
+        c
     } else if is_linux {
         // Linux target: when running on Linux natively, just use "cc".
         // When cross-compiling from macOS, pass -target for clang.
@@ -5544,7 +5732,7 @@ pub fn run(args: CompileArgs, format: OutputFormat, use_color: bool, verbose: u8
     // calls for every class method/getter during vtable registration. These
     // serve as linker roots that keep dynamically-dispatched methods alive.
     if !is_windows {
-        if is_android || is_linux {
+        if is_android || is_linux || is_harmonyos {
             cmd.arg("-Wl,--gc-sections");
         } else if is_cross_ios || is_cross_macos || is_cross_tvos {
             // ld64.lld called directly — no -Wl, prefix needed
@@ -6232,9 +6420,10 @@ pub fn run(args: CompileArgs, format: OutputFormat, use_color: bool, verbose: u8
         return Err(anyhow!("Linking failed"));
     }
 
-    // For Android, copy companion shared libraries (.so) next to the output binary
-    // so that perry-builder can pick them up and include them in the APK/AAB.
-    if is_android {
+    // For Android and HarmonyOS, copy companion shared libraries (.so) next to
+    // the output binary so the downstream bundler (APK/AAB for Android, HAP for
+    // HarmonyOS in PR B.3) can pick them up from the staging dir.
+    if is_android || is_harmonyos {
         if let Some(output_dir) = exe_path.parent() {
             for native_lib in &ctx.native_libraries {
                 if let Some(ref target_config) = native_lib.target_config {
