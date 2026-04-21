@@ -9,6 +9,7 @@ pub mod doctor;
 pub mod explain;
 pub mod fix_applier;
 pub mod fixer;
+pub mod harmonyos_hap;
 pub mod i18n;
 pub mod init;
 pub mod login;
