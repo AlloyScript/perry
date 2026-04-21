@@ -260,6 +260,8 @@ fn rust_target_triple(target: Option<&str>) -> Option<&'static str> {
         Some("watchos") => Some("arm64_32-apple-watchos"),
         Some("tvos-simulator") => Some("aarch64-apple-tvos-sim"),
         Some("tvos") => Some("aarch64-apple-tvos"),
+        Some("harmonyos") => Some("aarch64-unknown-linux-ohos"),
+        Some("harmonyos-simulator") => Some("x86_64-unknown-linux-ohos"),
         Some("android") => Some("aarch64-linux-android"),
         Some("linux") => Some("x86_64-unknown-linux-gnu"),
         Some("windows") => Some("x86_64-pc-windows-msvc"),
@@ -785,6 +787,14 @@ fn collect_library_candidates(name: &str, target: Option<&str>) -> Vec<PathBuf> 
                         candidates.push(dir.join(&tvos_name));
                     }
                 }
+                if matches!(target, Some("harmonyos") | Some("harmonyos-simulator")) {
+                    if name.contains("_harmonyos") {
+                        candidates.push(dir.join(name));
+                    } else {
+                        let harmonyos_name = name.replace(".a", "_harmonyos.a");
+                        candidates.push(dir.join(&harmonyos_name));
+                    }
+                }
                 // Cross-compile targets are in ../../target/<triple>/release/ relative
                 // to the perry binary (which is in target/release/)
                 if let Some(target_dir) = dir.parent() {
@@ -888,6 +898,7 @@ fn find_ui_library(target: Option<&str>) -> Option<PathBuf> {
         Some("android") => "libperry_ui_android.a",
         Some("watchos-simulator") | Some("watchos") => "libperry_ui_watchos.a",
         Some("tvos-simulator") | Some("tvos") => "libperry_ui_tvos.a",
+        Some("harmonyos-simulator") | Some("harmonyos") => "libperry_ui_harmonyos.a",
         Some("linux") => "libperry_ui_gtk4.a",
         Some("macos") => "libperry_ui_macos.a",
         Some("windows") => "perry_ui_windows.lib",
@@ -1375,6 +1386,7 @@ fn build_optimized_libs(
                 Some("android") => "perry-ui-android",
                 Some("watchos-simulator") | Some("watchos") => "perry-ui-watchos",
                 Some("tvos-simulator") | Some("tvos") => "perry-ui-tvos",
+                Some("harmonyos-simulator") | Some("harmonyos") => "perry-ui-harmonyos",
                 Some("linux") => "perry-ui-gtk4",
                 Some("windows") => "perry-ui-windows",
                 Some("macos") => "perry-ui-macos",
@@ -1510,6 +1522,7 @@ fn parse_native_library_manifest(
         Some("android") => "android",
         Some("tvos-simulator") | Some("tvos") => "tvos",
         Some("watchos-simulator") | Some("watchos") => "watchos",
+        Some("harmonyos-simulator") | Some("harmonyos") => "harmonyos",
         Some("linux") => "linux",
         Some("windows") => "windows",
         Some("web") => "web",
@@ -4252,7 +4265,7 @@ pub fn run(args: CompileArgs, format: OutputFormat, use_color: bool, verbose: u8
             .map(|f| f.trim().to_string())
             .filter(|f| !f.is_empty())
             .collect();
-        let is_mobile = matches!(target.as_deref(), Some("ios") | Some("ios-simulator") | Some("android") | Some("watchos") | Some("watchos-simulator") | Some("tvos") | Some("tvos-simulator"));
+        let is_mobile = matches!(target.as_deref(), Some("ios") | Some("ios-simulator") | Some("android") | Some("watchos") | Some("watchos-simulator") | Some("tvos") | Some("tvos-simulator") | Some("harmonyos") | Some("harmonyos-simulator"));
         if is_mobile {
             features.retain(|f| f != "plugins");
         }
