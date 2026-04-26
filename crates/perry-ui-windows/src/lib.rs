@@ -671,6 +671,19 @@ pub extern "C" fn perry_ui_canvas_fill_gradient(handle: i64, r1: f64, g1: f64, b
     widgets::canvas::fill_gradient(handle, r1, g1, b1, a1, r2, g2, b2, a2, direction);
 }
 
+#[no_mangle] pub extern "C" fn perry_ui_canvas_set_fill_color(_h: i64, _r: f64, _g: f64, _b: f64, _a: f64) {}
+#[no_mangle] pub extern "C" fn perry_ui_canvas_set_stroke_color(_h: i64, _r: f64, _g: f64, _b: f64, _a: f64) {}
+#[no_mangle] pub extern "C" fn perry_ui_canvas_set_line_width(_h: i64, _w: f64) {}
+#[no_mangle] pub extern "C" fn perry_ui_canvas_fill_rect(_h: i64, _x: f64, _y: f64, _w: f64, _ht: f64) {}
+#[no_mangle] pub extern "C" fn perry_ui_canvas_stroke_rect(_h: i64, _x: f64, _y: f64, _w: f64, _ht: f64) {}
+#[no_mangle] pub extern "C" fn perry_ui_canvas_clear_rect(h: i64, _x: f64, _y: f64, _w: f64, _ht: f64) { widgets::canvas::clear(h); }
+#[no_mangle] pub extern "C" fn perry_ui_canvas_arc(_h: i64, _x: f64, _y: f64, _r: f64, _sa: f64, _ea: f64) {}
+#[no_mangle] pub extern "C" fn perry_ui_canvas_close_path(_h: i64) {}
+#[no_mangle] pub extern "C" fn perry_ui_canvas_fill(_h: i64) {}
+#[no_mangle] pub extern "C" fn perry_ui_canvas_stroke_path(_h: i64) {}
+#[no_mangle] pub extern "C" fn perry_ui_canvas_fill_text(_h: i64, _ptr: i64, _x: f64, _y: f64) {}
+#[no_mangle] pub extern "C" fn perry_ui_canvas_set_font(_h: i64, _ptr: i64) {}
+
 // =============================================================================
 // Menu
 // =============================================================================

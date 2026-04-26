@@ -5169,6 +5169,10 @@ const PERRY_UI_TABLE: &[UiSig] = &[
     // declared on `scrollViewSetOffset` in index.d.ts — they coexist for now). ----
     UiSig { method: "scrollviewSetOffset", runtime: "perry_ui_scrollview_set_offset",
             args: &[UiArgKind::Widget, UiArgKind::F64], ret: UiReturnKind::Void },
+
+    // ---- Canvas ----
+    UiSig { method: "Canvas", runtime: "perry_ui_canvas_create",
+            args: &[UiArgKind::F64, UiArgKind::F64], ret: UiReturnKind::Widget },
 ];
 
 /// Instance method table for perry/ui receiver-based calls.
@@ -5194,6 +5198,48 @@ const PERRY_UI_INSTANCE_TABLE: &[UiSig] = &[
             args: &[], ret: UiReturnKind::F64 },
     UiSig { method: "set", runtime: "perry_ui_state_set",
             args: &[UiArgKind::F64], ret: UiReturnKind::Void },
+
+    // ---- Canvas instance methods ----
+    UiSig { method: "setFillColor", runtime: "perry_ui_canvas_set_fill_color",
+            args: &[UiArgKind::F64, UiArgKind::F64, UiArgKind::F64, UiArgKind::F64],
+            ret: UiReturnKind::Void },
+    UiSig { method: "setStrokeColor", runtime: "perry_ui_canvas_set_stroke_color",
+            args: &[UiArgKind::F64, UiArgKind::F64, UiArgKind::F64, UiArgKind::F64],
+            ret: UiReturnKind::Void },
+    UiSig { method: "setLineWidth", runtime: "perry_ui_canvas_set_line_width",
+            args: &[UiArgKind::F64], ret: UiReturnKind::Void },
+    UiSig { method: "fillRect", runtime: "perry_ui_canvas_fill_rect",
+            args: &[UiArgKind::F64, UiArgKind::F64, UiArgKind::F64, UiArgKind::F64],
+            ret: UiReturnKind::Void },
+    UiSig { method: "strokeRect", runtime: "perry_ui_canvas_stroke_rect",
+            args: &[UiArgKind::F64, UiArgKind::F64, UiArgKind::F64, UiArgKind::F64],
+            ret: UiReturnKind::Void },
+    UiSig { method: "clearRect", runtime: "perry_ui_canvas_clear_rect",
+            args: &[UiArgKind::F64, UiArgKind::F64, UiArgKind::F64, UiArgKind::F64],
+            ret: UiReturnKind::Void },
+    UiSig { method: "beginPath", runtime: "perry_ui_canvas_begin_path",
+            args: &[], ret: UiReturnKind::Void },
+    UiSig { method: "moveTo", runtime: "perry_ui_canvas_move_to",
+            args: &[UiArgKind::F64, UiArgKind::F64], ret: UiReturnKind::Void },
+    UiSig { method: "lineTo", runtime: "perry_ui_canvas_line_to",
+            args: &[UiArgKind::F64, UiArgKind::F64], ret: UiReturnKind::Void },
+    UiSig { method: "arc", runtime: "perry_ui_canvas_arc",
+            args: &[UiArgKind::F64, UiArgKind::F64, UiArgKind::F64, UiArgKind::F64, UiArgKind::F64],
+            ret: UiReturnKind::Void },
+    UiSig { method: "closePath", runtime: "perry_ui_canvas_close_path",
+            args: &[], ret: UiReturnKind::Void },
+    UiSig { method: "fill", runtime: "perry_ui_canvas_fill",
+            args: &[], ret: UiReturnKind::Void },
+    // `stroke()` maps to perry_ui_canvas_stroke_path (no-arg stateful form).
+    // The older perry_ui_canvas_stroke(h,r,g,b,a,lw) stateless form is kept
+    // for the legacy fill_gradient API and is not removed.
+    UiSig { method: "stroke", runtime: "perry_ui_canvas_stroke_path",
+            args: &[], ret: UiReturnKind::Void },
+    UiSig { method: "fillText", runtime: "perry_ui_canvas_fill_text",
+            args: &[UiArgKind::Str, UiArgKind::F64, UiArgKind::F64],
+            ret: UiReturnKind::Void },
+    UiSig { method: "setFont", runtime: "perry_ui_canvas_set_font",
+            args: &[UiArgKind::Str], ret: UiReturnKind::Void },
 ];
 
 fn perry_ui_table_lookup(method: &str) -> Option<&'static UiSig> {

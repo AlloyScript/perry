@@ -25,6 +25,36 @@ export interface WidgetMethods {
 /** Opaque handle to a native UI widget. */
 export type Widget = number & WidgetMethods & { readonly [__widget]: void };
 
+/**
+ * 2D drawing methods available on a Canvas handle. Mirrors the stateful
+ * HTML5 Canvas 2D context API. Color state is set with `setFillColor` /
+ * `setStrokeColor` / `setLineWidth` before issuing draw calls.
+ *
+ * Native platform support: stubs exist on all targets; GTK4, Android, and
+ * Windows have the path/gradient primitives. Full rasterization of the
+ * stateful API is tracked in perry-ui-test (`U` → in progress).
+ */
+export interface CanvasMethods {
+    setFillColor(r: number, g: number, b: number, a: number): void;
+    setStrokeColor(r: number, g: number, b: number, a: number): void;
+    setLineWidth(width: number): void;
+    fillRect(x: number, y: number, width: number, height: number): void;
+    strokeRect(x: number, y: number, width: number, height: number): void;
+    clearRect(x: number, y: number, width: number, height: number): void;
+    beginPath(): void;
+    moveTo(x: number, y: number): void;
+    lineTo(x: number, y: number): void;
+    arc(x: number, y: number, radius: number, startAngle: number, endAngle: number): void;
+    closePath(): void;
+    fill(): void;
+    stroke(): void;
+    fillText(text: string, x: number, y: number): void;
+    setFont(spec: string): void;
+}
+
+/** Opaque handle to a Canvas widget. Extends Widget with 2D drawing methods. */
+export type Canvas = Widget & CanvasMethods;
+
 /** Reactive state container. Generic over the value type it holds. */
 export interface State<T = number> {
     /** Current value of the state. */
@@ -207,6 +237,13 @@ export function ProgressView(): Widget;
 
 /** Depth stack (overlapping children). */
 export function ZStack(): Widget;
+
+/**
+ * 2D drawing canvas. Returns a Canvas handle with drawing methods.
+ * Compile-and-link supported on all native targets; visual rendering of the
+ * stateful color/path API is tracked in perry-ui-test.
+ */
+export function Canvas(width: number, height: number): Canvas;
 
 /** Dropdown picker. */
 export function Picker(onChange: (index: number) => void): Widget;

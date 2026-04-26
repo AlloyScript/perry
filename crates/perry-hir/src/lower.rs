@@ -2972,7 +2972,7 @@ fn lower_module_decl(
                                         if let Some((module_name, Some(method_name))) = ctx.lookup_native_module(func_name) {
                                             if module_name == "perry/ui" {
                                                 match method_name {
-                                                    "State" | "Sheet" | "Toolbar" | "Window" | "LazyVStack"
+                                                    "Canvas" | "State" | "Sheet" | "Toolbar" | "Window" | "LazyVStack"
                                                     | "NavigationStack" | "Picker" | "Table" | "TabBar" => {
                                                         ctx.register_native_instance(name.clone(), module_name.to_string(), method_name.to_string());
                                                     }
