@@ -232,12 +232,31 @@ fn run(cli: &Cli) -> Result<i32> {
                 });
                 continue;
             }
+            if is_widget_target(target) && ex.widget_bundle_id.is_none() {
+                results.push(ExampleReport {
+                    file: rel.clone(),
+                    kind: ex.kind,
+                    status: Status::CrossCompileSkip,
+                    detail: format!(
+                        "target=`{target}`: widget target requires \
+                         // widget-bundle-id: <com.example.id> banner directive"
+                    ),
+                    duration_ms: 0,
+                });
+                continue;
+            }
             let started = Instant::now();
             if cli.verbose {
                 eprintln!("[xcompile] {rel} --target {target}");
             }
-            let mut report =
-                cross_compile_one(&ex, &rel, &perry_bin, &out_dir, target);
+            let mut report = cross_compile_one(
+                &ex,
+                &rel,
+                &perry_bin,
+                &out_dir,
+                target,
+                ex.widget_bundle_id.as_deref(),
+            );
             report.duration_ms = started.elapsed().as_millis();
             if cli.verbose {
                 eprintln!("   -> {:?} ({} ms)", report.status, report.duration_ms);
@@ -336,6 +355,7 @@ struct Example {
     platforms: BTreeSet<String>,
     targets: BTreeSet<String>,
     compile_only: bool,
+    widget_bundle_id: Option<String>,
 }
 
 fn discover_examples(root: &Path) -> Result<Vec<Example>> {
@@ -369,6 +389,7 @@ fn discover_examples(root: &Path) -> Result<Vec<Example>> {
             platforms: banner.platforms,
             targets: banner.targets,
             compile_only: banner.compile_only,
+            widget_bundle_id: banner.widget_bundle_id,
         });
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -385,6 +406,9 @@ struct Banner {
     /// single-program timeout. Catches API/TS drift without the
     /// integration-test overhead.
     compile_only: bool,
+    /// Required for any `*-widget` / `wearos-tile` target — passed as
+    /// `--app-bundle-id` on the perry compile invocation.
+    widget_bundle_id: Option<String>,
 }
 
 fn read_banner(path: &Path) -> Result<Banner> {
@@ -415,6 +439,11 @@ fn read_banner(path: &Path) -> Result<Banner> {
             let v = rest.trim();
             if v.eq_ignore_ascii_case("false") || v == "0" || v.eq_ignore_ascii_case("no") {
                 b.compile_only = true;
+            }
+        } else if let Some(rest) = body.strip_prefix("widget-bundle-id:") {
+            let v = rest.trim();
+            if !v.is_empty() {
+                b.widget_bundle_id = Some(v.to_string());
             }
         }
     }
@@ -579,7 +608,8 @@ fn target_buildable_reason(target: &str, host: &str) -> Option<String> {
             Some(format!("target=`{target}` is Rust Tier-3 (nightly + -Zbuild-std); not yet wired"))
         }
         "ios" | "ios-simulator" | "tvos" | "tvos-simulator" | "macos"
-        | "ios-widget" | "ios-widget-simulator" => {
+        | "ios-widget" | "ios-widget-simulator"
+        | "watchos-widget" | "watchos-widget-simulator" => {
             if host != "macos" {
                 Some(format!("needs Xcode — host `{host}` can't build `{target}`"))
             } else if !has_xcode() {
@@ -588,7 +618,7 @@ fn target_buildable_reason(target: &str, host: &str) -> Option<String> {
                 None
             }
         }
-        "android" => {
+        "android" | "android-widget" | "wearos-tile" => {
             if host != "linux" && host != "macos" {
                 Some(format!("android cross-compile unsupported on host `{host}`"))
             } else if std::env::var("ANDROID_NDK_HOME").is_err()
@@ -610,6 +640,18 @@ fn target_buildable_reason(target: &str, host: &str) -> Option<String> {
     }
 }
 
+fn is_widget_target(target: &str) -> bool {
+    matches!(
+        target,
+        "ios-widget"
+            | "ios-widget-simulator"
+            | "watchos-widget"
+            | "watchos-widget-simulator"
+            | "android-widget"
+            | "wearos-tile"
+    )
+}
+
 fn has_xcode() -> bool {
     Command::new("xcrun")
         .arg("--version")
@@ -624,6 +666,7 @@ fn cross_compile_one(
     perry_bin: &Path,
     out_dir: &Path,
     target: &str,
+    widget_bundle_id: Option<&str>,
 ) -> ExampleReport {
     let stem = safe_stem(rel);
     // Output-path extension: perry itself creates the .app bundle directory
@@ -639,25 +682,45 @@ fn cross_compile_one(
         _ => "",
     };
     let out = out_dir.join(format!("{stem}__{target}{ext}"));
-    // For Apple bundle targets, perry produces `<out>.app/` alongside (or
-    // replacing) the linked binary; check that directory for the artifact.
+
+    // Determine where to find the artifact after a successful compile.
+    //
+    // Apple app-bundle targets (ios, tvos, …) create `<out>.app/` alongside
+    // the linked binary. Widget targets (ios-widget, android-widget, …) write
+    // source bundles directly into the `-o` directory, so `out` IS the artifact
+    // directory — no `.app` suffix appended.
     let artifact_check = match target {
-        "ios" | "ios-simulator" | "visionos" | "visionos-simulator" | "tvos" | "tvos-simulator" | "watchos"
-        | "watchos-simulator" | "ios-widget" | "ios-widget-simulator" => {
+        "ios" | "ios-simulator" | "visionos" | "visionos-simulator"
+        | "tvos" | "tvos-simulator" | "watchos" | "watchos-simulator" => {
             out.with_extension("app")
         }
+        // Widget targets: perry writes the source bundle into `-o` itself.
         _ => out.clone(),
     };
 
-    let output = match Command::new(perry_bin)
-        .arg("compile")
+    // Sentinel file expected inside a widget bundle directory.
+    // Apple widget dirs contain Info.plist; Android widget dirs contain
+    // AndroidManifest_snippet.xml. If present, we check for the sentinel
+    // instead of a raw non-empty-dir test.
+    let sentinel: Option<&str> = match target {
+        "ios-widget" | "ios-widget-simulator"
+        | "watchos-widget" | "watchos-widget-simulator" => Some("Info.plist"),
+        "android-widget" | "wearos-tile" => Some("AndroidManifest_snippet.xml"),
+        _ => None,
+    };
+
+    let mut cmd = Command::new(perry_bin);
+    cmd.arg("compile")
         .arg(&ex.path)
         .arg("--target")
         .arg(target)
         .arg("-o")
-        .arg(&out)
-        .output()
-    {
+        .arg(&out);
+    if let Some(bid) = widget_bundle_id {
+        cmd.arg("--app-bundle-id").arg(bid);
+    }
+
+    let output = match cmd.output() {
         Ok(o) => o,
         Err(e) => {
             return ExampleReport {
@@ -684,9 +747,12 @@ fn cross_compile_one(
         };
     }
 
-    // Verify the artifact landed and has bytes. Apple .app targets produce
-    // a directory bundle rather than a single file.
-    let ok = if artifact_check.is_dir() {
+    // Verify the artifact landed. Widget targets produce source-bundle
+    // directories; check for the sentinel file inside rather than just
+    // directory non-emptiness, so a zero-widget compile doesn't pass.
+    let ok = if let Some(s) = sentinel {
+        artifact_check.is_dir() && artifact_check.join(s).is_file()
+    } else if artifact_check.is_dir() {
         std::fs::read_dir(&artifact_check).map(|it| it.count() > 0).unwrap_or(false)
     } else {
         artifact_check.metadata().map(|m| m.len() > 0).unwrap_or(false)
